@@ -18,17 +18,17 @@ MODEL_COMPONENTS = [
     "SVC",
 ]
 SCORES = [
-    0.661,
-    0.666,
+    0.461,
+    0.466,
 ]
 METRICS = [
     {
         "type": "metrics",
         "dataset": "train",
-        "precision": 0.691,
-        "balanced_accuracy": 0.661,
-        "recall": 0.370,
-        "f1_score": 0.482,
+        "precision": 0.5,
+        "balanced_accuracy": 0.5,
+        "recall": 0.2,
+        "f1_score": 0.3,
     },
     {
         "type": "metrics",
