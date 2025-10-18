@@ -1,0 +1,23 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run homework main to train model",
+			"type": "shell",
+			"command": "c:/Users/juanp/predictiva/LAB-03-prediccion-del-default-usando-svc-pablovanegas/.venv/Scripts/python.exe -m homework.homework",
+			"isBackground": false,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "Run pytest",
+			"type": "shell",
+			"command": "c:/Users/juanp/predictiva/LAB-03-prediccion-del-default-usando-svc-pablovanegas/.venv/Scripts/python.exe -m pytest -q",
+			"isBackground": false,
+			"problemMatcher": [
+				"$pytest - stylish"
+			],
+			"group": "build"
+		}
+	]
+}

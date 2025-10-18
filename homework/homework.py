@@ -95,3 +95,243 @@
 # {'type': 'cm_matrix', 'dataset': 'train', 'true_0': {"predicted_0": 15562, "predicte_1": 666}, 'true_1': {"predicted_0": 3333, "predicted_1": 1444}}
 # {'type': 'cm_matrix', 'dataset': 'test', 'true_0': {"predicted_0": 15562, "predicte_1": 650}, 'true_1': {"predicted_0": 2490, "predicted_1": 1420}}
 #
+
+from __future__ import annotations
+
+import gzip
+import json
+import os
+import pickle
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+import numpy as np  # type: ignore
+import pandas as pd  # type: ignore
+from sklearn.compose import ColumnTransformer  # type: ignore
+from sklearn.decomposition import PCA  # type: ignore
+from sklearn.feature_selection import SelectKBest, f_classif  # type: ignore
+from sklearn.metrics import (
+	balanced_accuracy_score,
+	confusion_matrix,
+	f1_score,
+	precision_score,
+	recall_score,
+)
+from sklearn.model_selection import GridSearchCV, StratifiedKFold  # type: ignore
+from sklearn.pipeline import Pipeline  # type: ignore
+from sklearn.preprocessing import OneHotEncoder, StandardScaler  # type: ignore
+from sklearn.svm import SVC  # type: ignore
+
+
+DATA_DIR = Path("files/input")
+MODEL_PATH = Path("files/models/model.pkl.gz")
+OUTPUT_METRICS = Path("files/output/metrics.json")
+
+
+def _ensure_dirs() -> None:
+	MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+	OUTPUT_METRICS.parent.mkdir(parents=True, exist_ok=True)
+
+
+def load_data() -> Tuple[pd.DataFrame, pd.DataFrame]:
+	"""Load train and test CSV (zipped) as DataFrames.
+
+	Returns:
+		Tuple of (train_df, test_df)
+	"""
+	train_fp = DATA_DIR / "train_data.csv.zip"
+	test_fp = DATA_DIR / "test_data.csv.zip"
+	train_df = pd.read_csv(train_fp, compression="zip")
+	test_df = pd.read_csv(test_fp, compression="zip")
+	return train_df, test_df
+
+
+def clean_data(df: pd.DataFrame) -> pd.DataFrame:
+	"""Apply dataset cleaning rules.
+
+	- Rename 'default payment next month' to 'default'
+	- Drop 'ID'
+	- Drop rows with missing values
+	- Cap EDUCATION > 4 to 4 (others)
+	"""
+	df = df.copy()
+
+	# Standardize target column name
+	if "default payment next month" in df.columns:
+		df = df.rename(columns={"default payment next month": "default"})
+
+	# Drop ID column if present 
+	if "ID" in df.columns:
+		df = df.drop(columns=["ID"])  # type: ignore[arg-type]
+
+	# Normalize EDUCATION values > 4 to 4 (others)
+	if "EDUCATION" in df.columns:
+		df.loc[df["EDUCATION"] > 4, "EDUCATION"] = 4
+
+	# Drop rows with NAs
+	df = df.dropna(axis=0).reset_index(drop=True)
+
+	return df
+
+
+def split_xy(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+	"""Split features and target.
+
+	Returns:
+		X (DataFrame), y (Series)
+	"""
+	target_col = "default"
+	assert target_col in df.columns, "Target column 'default' not found after cleaning."
+	X = df.drop(columns=[target_col])
+	y = df[target_col].astype(int)
+	return X, y
+
+
+def build_pipeline(X: pd.DataFrame) -> Pipeline:
+	"""Build the classification pipeline with the required steps.
+
+	Steps:
+	  - OneHotEncoder for categorical columns
+	  - PCA using all components
+	  - StandardScaler
+	  - SelectKBest
+	  - SVC
+	"""
+	# Heuristically define categorical columns
+	cat_cols: List[str] = [
+		"SEX",
+		"EDUCATION",
+		"MARRIAGE",
+		"PAY_0",
+		"PAY_2",
+		"PAY_3",
+		"PAY_4",
+		"PAY_5",
+		"PAY_6",
+	]
+	cat_cols = [c for c in cat_cols if c in X.columns]
+	num_cols = [c for c in X.columns if c not in cat_cols]
+
+	# Force dense output from OHE so PCA can consume it reliably across sklearn versions
+	ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
+	preprocessor = ColumnTransformer(
+		transformers=[
+			("cat", ohe, cat_cols),
+			("num", "passthrough", num_cols),
+		]
+	)
+
+	pipe = Pipeline(
+		steps=[
+			("preprocess", preprocessor),
+			("pca", PCA(n_components=None, random_state=42)),
+			("scaler", StandardScaler()),
+			("select", SelectKBest(score_func=f_classif, k=50)),
+			("svc", SVC(kernel="rbf", class_weight="balanced", random_state=42)),
+		]
+	)
+	return pipe
+
+
+def tune_model(pipe: Pipeline, X: pd.DataFrame, y: pd.Series) -> GridSearchCV:
+	"""Tune hyperparameters with 10-fold cross-validation using balanced accuracy."""
+	# Reasonable, compact grid to keep runtime acceptable while meeting thresholds
+	param_grid = {
+		"select__k": [20, 40, 60, 80],
+		"svc__C": [0.5, 1.0, 2.0, 5.0],
+		"svc__gamma": ["scale", "auto"],
+		"svc__kernel": ["rbf"],
+	}
+
+	cv = StratifiedKFold(n_splits=10, shuffle=True, random_state=42)
+	grid = GridSearchCV(
+		estimator=pipe,
+		param_grid=param_grid,
+		scoring="balanced_accuracy",
+		cv=cv,
+		n_jobs=-1,
+		refit=True,
+		verbose=0,
+	)
+	grid.fit(X, y)
+	return grid
+
+
+def save_model(model: GridSearchCV, path: Path = MODEL_PATH) -> None:
+	"""Save model compressed with gzip pickle."""
+	with gzip.open(path, "wb") as f:
+		pickle.dump(model, f)
+
+
+def _compute_metrics_dict(y_true: np.ndarray, y_pred: np.ndarray, dataset: str) -> Dict[str, object]:
+	return {
+		"type": "metrics",
+		"dataset": dataset,
+		"precision": float(precision_score(y_true, y_pred, zero_division=0)),
+		"balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+		"recall": float(recall_score(y_true, y_pred, zero_division=0)),
+		"f1_score": float(f1_score(y_true, y_pred, zero_division=0)),
+	}
+
+
+def _compute_cm_dict(y_true: np.ndarray, y_pred: np.ndarray, dataset: str) -> Dict[str, object]:
+	cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+	# cm layout with labels [0,1]: rows=true, cols=pred
+	t0_p0 = int(cm[0, 0])
+	t0_p1 = int(cm[0, 1])
+	t1_p0 = int(cm[1, 0])
+	t1_p1 = int(cm[1, 1])
+	return {
+		"type": "cm_matrix",
+		"dataset": dataset,
+		"true_0": {"predicted_0": t0_p0, "predicted_1": t0_p1},
+		"true_1": {"predicted_0": t1_p0, "predicted_1": t1_p1},
+	}
+
+
+def evaluate_and_save_metrics(model: GridSearchCV, X_train: pd.DataFrame, y_train: pd.Series, X_test: pd.DataFrame, y_test: pd.Series, path: Path = OUTPUT_METRICS) -> None:
+	y_pred_train = model.predict(X_train)
+	y_pred_test = model.predict(X_test)
+
+	y_train_np = np.asarray(y_train)
+	y_test_np = np.asarray(y_test)
+	y_pred_train_np = np.asarray(y_pred_train)
+	y_pred_test_np = np.asarray(y_pred_test)
+
+	# Build entries in the required order: metrics train, metrics test, cm train, cm test
+	entries: List[Dict[str, object]] = [
+		_compute_metrics_dict(y_train_np, y_pred_train_np, "train"),
+		_compute_metrics_dict(y_test_np, y_pred_test_np, "test"),
+		_compute_cm_dict(y_train_np, y_pred_train_np, "train"),
+		_compute_cm_dict(y_test_np, y_pred_test_np, "test"),
+	]
+
+	with open(path, "w", encoding="utf-8") as f:
+		for row in entries:
+			f.write(json.dumps(row) + "\n")
+
+
+def main() -> None:
+	_ensure_dirs()
+
+	# Load and clean
+	train_df, test_df = load_data()
+	train_df = clean_data(train_df)
+	test_df = clean_data(test_df)
+
+	# Split
+	X_train, y_train = split_xy(train_df)
+	X_test, y_test = split_xy(test_df)
+
+	# Build, tune, save
+	pipe = build_pipeline(X_train)
+	model = tune_model(pipe, X_train, y_train)
+	save_model(model, MODEL_PATH)
+
+	# Evaluate and save metrics
+	evaluate_and_save_metrics(model, X_train, y_train, X_test, y_test, OUTPUT_METRICS)
+
+
+if __name__ == "__main__":
+	main()
+
