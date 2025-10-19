@@ -213,7 +213,7 @@ def build_pipeline(X: pd.DataFrame) -> Pipeline:
 	num_cols = [c for c in X.columns if c not in cat_cols]
 
 	# Force dense output from OHE so PCA can consume it reliably across sklearn versions
-	ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
+	ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
 	preprocessor = ColumnTransformer(
 		transformers=[
 			("cat", ohe, cat_cols),
