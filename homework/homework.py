@@ -237,8 +237,8 @@ def tune_model(pipe: Pipeline, X: pd.DataFrame, y: pd.Series) -> GridSearchCV:
 	"""Tune hyperparameters with 10-fold cross-validation using balanced accuracy."""
 	# Reasonable, compact grid to keep runtime acceptable while meeting thresholds
 	param_grid = {
-		"select__k": [20, 40, 60, 80],
-		"svc__C": [0.5, 1.0, 2.0, 5.0],
+		"select__k": [20, 40],
+		"svc__C": [ 1.0, 2.0],
 		"svc__gamma": ["scale", "auto"],
 		"svc__kernel": ["rbf"],
 	}
